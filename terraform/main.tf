@@ -220,6 +220,72 @@ resource "aws_iam_policy" "overprivileged_app_policy" {
 # 4. EKS CLUSTER & NODE GROUP (With IMDSv1 & Toxic Role Attachment)
 # ==============================================================================
 
+resource "aws_eks_cluster" "main" {
+  name     = var.cluster_name
+  version  = "1.32" # Updated to an active standard-support EKS version
+  role_arn = aws_iam_role.eks_cluster_role.arn
+
+  vpc_config {
+    subnet_ids              = concat(aws_subnet.public[*].id, aws_subnet.private[*].id)
+    endpoint_public_access  = true
+    endpoint_private_access = true
+  }
+
+  access_config {
+    authentication_mode                         = "API_AND_CONFIG_MAP"
+    bootstrap_cluster_creator_admin_permissions = true
+  }
+
+  depends_on = [aws_iam_role_policy_attachment.eks_cluster_policy]
+}
+
+# Launch Template enabling IMDSv1 and Hop Limit = 2 so pods can query EC2 metadata
+resource "aws_launch_template" "eks_nodes" {
+  name_prefix = "${var.cluster_name}-node-lt-"
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "optional" # Triggers CSPM check for IMDSv1 enabled
+    http_put_response_hop_limit = 2          # Allows pods to reach IMDS
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name = "${var.cluster_name}-worker-node"
+    }
+  }
+}
+
+resource "aws_eks_node_group" "main" {
+  cluster_name    = aws_eks_cluster.main.name
+  node_group_name = "${var.cluster_name}-ng"
+  node_role_arn   = aws_iam_role.eks_node_role.arn
+  subnet_ids      = aws_subnet.private[*].id
+
+  # Explicitly use Amazon Linux 2023 and define instance_types on the node group
+  ami_type       = "AL2023_x86_64_STANDARD"
+  instance_types = ["t3.large"]
+
+  launch_template {
+    id      = aws_launch_template.eks_nodes.id
+    version = aws_launch_template.eks_nodes.latest_version
+  }
+
+  scaling_config {
+    desired_size = 1
+    max_size     = 2
+    min_size     = 1
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.eks_worker_node_policy,
+    aws_iam_role_policy_attachment.eks_cni_policy,
+    aws_iam_role_policy_attachment.eks_ecr_readonly,
+    aws_iam_role_policy_attachment.eks_node_overprivileged
+  ]
+}
+
 resource "aws_iam_role" "eks_cluster_role" {
   name = "${var.cluster_name}-cluster-role"
   assume_role_policy = jsonencode({
@@ -237,24 +303,6 @@ resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
 }
 
-resource "aws_eks_cluster" "main" {
-  name     = var.cluster_name
-  version  = "1.30"
-  role_arn = aws_iam_role.eks_cluster_role.arn
-
-  vpc_config {
-    subnet_ids              = concat(aws_subnet.public[*].id, aws_subnet.private[*].id)
-    endpoint_public_access  = true
-    endpoint_private_access = true
-  }
-
-  access_config {
-    authentication_mode                         = "API_AND_CONFIG_MAP"
-    bootstrap_cluster_creator_admin_permissions = true
-  }
-
-  depends_on = [aws_iam_role_policy_attachment.eks_cluster_policy]
-}
 
 # EKS Worker Node IAM Role
 resource "aws_iam_role" "eks_node_role" {
@@ -309,30 +357,7 @@ resource "aws_launch_template" "eks_nodes" {
   }
 }
 
-resource "aws_eks_node_group" "main" {
-  cluster_name    = aws_eks_cluster.main.name
-  node_group_name = "${var.cluster_name}-ng"
-  node_role_arn   = aws_iam_role.eks_node_role.arn
-  subnet_ids      = aws_subnet.private[*].id
 
-  launch_template {
-    id      = aws_launch_template.eks_nodes.id
-    version = aws_launch_template.eks_nodes.latest_version
-  }
-
-  scaling_config {
-    desired_size = 1
-    max_size     = 2
-    min_size     = 1
-  }
-
-  depends_on = [
-    aws_iam_role_policy_attachment.eks_worker_node_policy,
-    aws_iam_role_policy_attachment.eks_cni_policy,
-    aws_iam_role_policy_attachment.eks_ecr_readonly,
-    aws_iam_role_policy_attachment.eks_node_overprivileged
-  ]
-}
 
 # ==============================================================================
 # 5. DATADOG AWS INTEGRATION (CSPM, CIEM, Extended Resource Collection Only)
