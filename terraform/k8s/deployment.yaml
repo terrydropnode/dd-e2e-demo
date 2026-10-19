@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-processor
+  labels:
+    tags.datadoghq.com/env: "prod"
+    tags.datadoghq.com/service: "order-processor"
+    tags.datadoghq.com/version: "1.0.0"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: order-processor
+  template:
+    metadata:
+      labels:
+        app: order-processor
+        tags.datadoghq.com/env: "prod"
+        tags.datadoghq.com/service: "order-processor"
+        tags.datadoghq.com/version: "1.0.0"
+        admission.datadoghq.com/enabled: "true"
+    spec:
+      containers:
+        - name: order-processor
+          image: <YOUR_ECR_OR_DOCKERHUB_REPO>/order-processor:1.0.0
+          ports:
+            - containerPort: 8080
+          env:
+            - name: DD_AGENT_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: DD_ENV
+              value: "prod"
+            - name: DD_SERVICE
+              value: "order-processor"
+            - name: DD_VERSION
+              value: "1.0.0"
+            # --- APPLICATION SECURITY KNOBS ---
+            - name: DD_APPSEC_ENABLED
+              value: "true"               # Runtime WAF / Threat Detection (ASM)
+            - name: DD_IAST_ENABLED
+              value: "true"               # Code-level vulnerability detection (IAST)
+            - name: DD_APPSEC_SCA_ENABLED
+              value: "true"               # Runtime Software Composition Analysis
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-processor-svc
+spec:
+  type: LoadBalancer
+  selector:
+    app: order-processor
+  ports:
+    - port: 80
+      targetPort: 8080
