@@ -220,9 +220,26 @@ resource "aws_iam_policy" "overprivileged_app_policy" {
 # 4. EKS CLUSTER & NODE GROUP (With IMDSv1 & Toxic Role Attachment)
 # ==============================================================================
 
+resource "aws_iam_role" "eks_cluster_role" {
+  name = "${var.cluster_name}-cluster-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "eks.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
+  role       = aws_iam_role.eks_cluster_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+}
+
 resource "aws_eks_cluster" "main" {
   name     = var.cluster_name
-  version  = "1.32" # Updated to an active standard-support EKS version
+  version  = "1.32"
   role_arn = aws_iam_role.eks_cluster_role.arn
 
   vpc_config {
@@ -239,6 +256,41 @@ resource "aws_eks_cluster" "main" {
   depends_on = [aws_iam_role_policy_attachment.eks_cluster_policy]
 }
 
+# EKS Worker Node IAM Role
+resource "aws_iam_role" "eks_node_role" {
+  name = "${var.cluster_name}-node-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ec2.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "eks_worker_node_policy" {
+  role       = aws_iam_role.eks_node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+}
+
+resource "aws_iam_role_policy_attachment" "eks_cni_policy" {
+  role       = aws_iam_role.eks_node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+}
+
+resource "aws_iam_role_policy_attachment" "eks_ecr_readonly" {
+  role       = aws_iam_role.eks_node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+}
+
+# CRITICAL FOR DEMO: Attach the over-privileged S3/IAM policy to the worker node role
+resource "aws_iam_role_policy_attachment" "eks_node_overprivileged" {
+  role       = aws_iam_role.eks_node_role.name
+  policy_arn = aws_iam_policy.overprivileged_app_policy.arn
+}
+
+# Launch Template enabling IMDSv1 and Hop Limit = 2 so pods can query EC2 metadata
 # Launch Template enabling IMDSv1 and Hop Limit = 2 so pods can query EC2 metadata
 resource "aws_launch_template" "eks_nodes" {
   name_prefix = "${var.cluster_name}-node-lt-"
@@ -285,79 +337,6 @@ resource "aws_eks_node_group" "main" {
     aws_iam_role_policy_attachment.eks_node_overprivileged
   ]
 }
-
-resource "aws_iam_role" "eks_cluster_role" {
-  name = "${var.cluster_name}-cluster-role"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Service = "eks.amazonaws.com" }
-      Action    = "sts:AssumeRole"
-    }]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
-  role       = aws_iam_role.eks_cluster_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
-}
-
-
-# EKS Worker Node IAM Role
-resource "aws_iam_role" "eks_node_role" {
-  name = "${var.cluster_name}-node-role"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Service = "ec2.amazonaws.com" }
-      Action    = "sts:AssumeRole"
-    }]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "eks_worker_node_policy" {
-  role       = aws_iam_role.eks_node_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
-}
-
-resource "aws_iam_role_policy_attachment" "eks_cni_policy" {
-  role       = aws_iam_role.eks_node_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
-}
-
-resource "aws_iam_role_policy_attachment" "eks_ecr_readonly" {
-  role       = aws_iam_role.eks_node_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
-}
-
-# CRITICAL FOR DEMO: Attach the over-privileged S3/IAM policy to the worker node role
-resource "aws_iam_role_policy_attachment" "eks_node_overprivileged" {
-  role       = aws_iam_role.eks_node_role.name
-  policy_arn = aws_iam_policy.overprivileged_app_policy.arn
-}
-
-# Launch Template enabling IMDSv1 and Hop Limit = 2 so pods can query EC2 metadata
-resource "aws_launch_template" "eks_nodes" {
-  name_prefix   = "${var.cluster_name}-node-lt-"
-  instance_type = "t3.large"
-
-  metadata_options {
-    http_endpoint               = "enabled"
-    http_tokens                 = "optional" # Triggers CSPM check for IMDSv1 enabled
-    http_put_response_hop_limit = 2          # Allows pods to reach IMDS
-  }
-
-  tag_specifications {
-    resource_type = "instance"
-    tags = {
-      Name = "${var.cluster_name}-worker-node"
-    }
-  }
-}
-
-
 
 # ==============================================================================
 # 5. DATADOG AWS INTEGRATION (CSPM, CIEM, Extended Resource Collection Only)
