@@ -187,7 +187,7 @@ resource "aws_s3_bucket_public_access_block" "bad_public_block" {
   restrict_public_buckets = false
 }
 
-# Seed dummy sensitive data to exfiltrate during the runtime attack
+# Seed dummy sensitive data for the container workload to interact with
 resource "aws_s3_object" "secret_financial_csv" {
   bucket  = aws_s3_bucket.sensitive_financial_data.id
   key     = "q4-customer-credit-cards.csv"
@@ -297,8 +297,8 @@ resource "aws_launch_template" "eks_nodes" {
 
   metadata_options {
     http_endpoint               = "enabled"
-    http_tokens                 = "optional" # Allows SSRF IMDSv1 credential theft
-    http_put_response_hop_limit = 2          # Allows container network namespace to reach IMDS
+    http_tokens                 = "optional" # Triggers CSPM check for IMDSv1 enabled
+    http_put_response_hop_limit = 2          # Allows pods to reach IMDS
   }
 
   tag_specifications {
@@ -335,7 +335,7 @@ resource "aws_eks_node_group" "main" {
 }
 
 # ==============================================================================
-# 5. DATADOG AWS INTEGRATION (CSPM, CIEM, Extended Resource Collection)
+# 5. DATADOG AWS INTEGRATION (CSPM, CIEM, Extended Resource Collection Only)
 # ==============================================================================
 
 resource "datadog_integration_aws_account" "datadog_aws" {
@@ -354,7 +354,7 @@ resource "datadog_integration_aws_account" "datadog_aws" {
 
   resources_config {
     extended_collection                          = true
-    cloud_security_posture_management_collection = true # Powers CSPM, CIEM, and Attack Paths
+    cloud_security_posture_management_collection = true # Powers CSPM, CIEM, and Security Graph
   }
 
   metrics_config {
@@ -366,10 +366,7 @@ resource "datadog_integration_aws_account" "datadog_aws" {
   }
 
   logs_config {
-    lambda_forwarder {
-      lambdas = [aws_cloudformation_stack.datadog_forwarder.outputs["DatadogForwarderArn"]]
-      sources = ["s3"]
-    }
+    lambda_forwarder {}
   }
 }
 
@@ -396,7 +393,7 @@ resource "aws_iam_role" "datadog_integration_role" {
 }
 
 resource "aws_iam_role_policy_attachment" "datadog_security_audit" {
-  role       = aws_iam_role.datadog_integration_role.name
+  role       = aws_iam_role.eks_node_role != null ? aws_iam_role.datadog_integration_role.name : ""
   policy_arn = "arn:aws:iam::aws:policy/SecurityAudit"
 }
 
@@ -429,104 +426,7 @@ resource "aws_iam_role_policy" "datadog_core_permissions" {
 }
 
 # ==============================================================================
-# 6. CLOUDTRAIL + S3 DATA EVENTS + DATADOG FORWARDER LAMBDA (Cloud SIEM)
-# ==============================================================================
-
-resource "aws_secretsmanager_secret" "dd_api_key" {
-  name_prefix             = "datadog-api-key-"
-  recovery_window_in_days = 0
-}
-
-resource "aws_secretsmanager_secret_version" "dd_api_key" {
-  secret_id     = aws_secretsmanager_secret.dd_api_key.id
-  secret_string = var.dd_api_key
-}
-
-resource "aws_s3_bucket" "cloudtrail_bucket" {
-  bucket_prefix = "dd-sec-lab-cloudtrail-"
-  force_destroy = true
-}
-
-resource "aws_s3_bucket_policy" "cloudtrail_bucket_policy" {
-  bucket = aws_s3_bucket.cloudtrail_bucket.id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid       = "AWSCloudTrailAclCheck"
-        Effect    = "Allow"
-        Principal = { Service = "cloudtrail.amazonaws.com" }
-        Action    = "s3:GetBucketAcl"
-        Resource  = aws_s3_bucket.cloudtrail_bucket.arn
-      },
-      {
-        Sid       = "AWSCloudTrailWrite"
-        Effect    = "Allow"
-        Principal = { Service = "cloudtrail.amazonaws.com" }
-        Action    = "s3:PutObject"
-        Resource  = "${aws_s3_bucket.cloudtrail_bucket.arn}/AWSLogs/${data.aws_caller_identity.current.account_id}/*"
-        Condition = {
-          StringEquals = { "s3:x-amz-acl" = "bucket-owner-full-control" }
-        }
-      }
-    ]
-  })
-}
-
-resource "aws_cloudtrail" "sec_lab_trail" {
-  name                          = "${var.cluster_name}-trail"
-  s3_bucket_name                = aws_s3_bucket.cloudtrail_bucket.id
-  include_global_service_events = true
-  is_multi_region_trail         = false
-  enable_logging                = true
-
-  # Logs both Management API calls and S3 Object-level GetObject/PutObject on the target bucket
-  event_selector {
-    read_write_type           = "All"
-    include_management_events = true
-
-    data_resource {
-      type   = "AWS::S3::Object"
-      values = ["${aws_s3_bucket.sensitive_financial_data.arn}/"]
-    }
-  }
-
-  depends_on = [aws_s3_bucket_policy.cloudtrail_bucket_policy]
-}
-
-resource "aws_cloudformation_stack" "datadog_forwarder" {
-  name         = "${var.cluster_name}-dd-forwarder"
-  capabilities = ["CAPABILITY_IAM", "CAPABILITY_NAMED_IAM", "CAPABILITY_AUTO_EXPAND"]
-  template_url = "https://datadog-cloudformation-template.s3.amazonaws.com/aws/forwarder/latest.yaml"
-
-  parameters = {
-    DdApiKeySecretArn = aws_secretsmanager_secret.dd_api_key.arn
-    DdSite            = var.dd_site
-    FunctionName      = "${var.cluster_name}-dd-forwarder"
-  }
-}
-
-resource "aws_lambda_permission" "allow_cloudtrail_bucket" {
-  statement_id  = "AllowExecutionFromS3Bucket"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_cloudformation_stack.datadog_forwarder.outputs["DatadogForwarderArn"]
-  principal     = "s3.amazonaws.com"
-  source_arn    = aws_s3_bucket.cloudtrail_bucket.arn
-}
-
-resource "aws_s3_bucket_notification" "cloudtrail_to_datadog" {
-  bucket = aws_s3_bucket.cloudtrail_bucket.id
-
-  lambda_function {
-    lambda_function_arn = aws_cloudformation_stack.datadog_forwarder.outputs["DatadogForwarderArn"]
-    events              = ["s3:ObjectCreated:*"]
-  }
-
-  depends_on = [aws_lambda_permission.allow_cloudtrail_bucket]
-}
-
-# ==============================================================================
-# 7. OUTPUTS
+# 6. OUTPUTS
 # ==============================================================================
 
 output "configure_kubectl" {
@@ -535,12 +435,12 @@ output "configure_kubectl" {
 }
 
 output "ecr_repository_url" {
-  description = "ECR Repo URL for pushing the vulnerable order-processor image (no imagePullSecrets required)"
+  description = "ECR Repo URL for pushing the vulnerable order-processor image"
   value       = aws_ecr_repository.order_processor.repository_url
 }
 
 output "sensitive_s3_bucket_name" {
-  description = "Name of the misconfigured S3 bucket containing q4-customer-credit-cards.csv"
+  description = "Name of the misconfigured S3 bucket"
   value       = aws_s3_bucket.sensitive_financial_data.id
 }
 
