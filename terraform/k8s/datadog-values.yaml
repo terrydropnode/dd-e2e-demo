@@ -1,0 +1,25 @@
+datadog:
+  site: "datadoghq.com"
+  apiKeyExistingSecret: "datadog-secret"
+  clusterName: "sec-demo-eks"
+  
+  # Observability: Logs & APM
+  logs:
+    enabled: true
+    containerCollectAll: true
+  apm:
+    portEnabled: true
+    enabled: true
+
+  # Security: CWS (eBPF), CSPM (Compliance), and SBOM
+  securityAgent:
+    runtime:
+      enabled: true           # Enables eBPF Cloud Workload Security (CWS)
+      fimEnabled: true        # Enables File Integrity Monitoring
+    compliance:
+      enabled: true           # Enables Kubernetes CIS / CSPM checks
+  sbom:
+    containerImage:
+      enabled: true           # Runtime container vulnerability scanning
+    host:
+      enabled: true
