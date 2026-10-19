@@ -317,11 +317,11 @@ resource "aws_eks_node_group" "main" {
 
   # Explicitly use Amazon Linux 2023 and define instance_types on the node group
   ami_type       = "AL2023_x86_64_STANDARD"
-  instance_types = ["t3.large"]
+  instance_types = ["t3.medium"]
 
-  launch_template {
+launch_template {
     id      = aws_launch_template.eks_nodes.id
-    version = aws_launch_template.eks_nodes.latest_version
+    version = tostring(aws_launch_template.eks_nodes.latest_version)
   }
 
   scaling_config {
