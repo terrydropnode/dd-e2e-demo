@@ -1,0 +1,34 @@
+name: Datadog Code-to-Cloud Security Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  datadog-static-security:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Runs SAST (Python) & IaC (Terraform)
+      - name: Datadog Static Analysis & IaC Scan
+        uses: DataDog/datadog-static-analyzer-github-action@v2
+        with:
+          dd_api_key: ${{ secrets.DD_API_KEY }}
+          dd_app_key: ${{ secrets.DD_APP_KEY }}
+          dd_site: "datadoghq.com"
+          cpu_count: 2
+          enable_performance_statistics: false
+
+      # Runs Software Composition Analysis (SBOM / requirements.txt)
+      - name: Datadog SCA (OSV Scanner)
+        uses: DataDog/datadog-sca-github-action@v1
+        with:
+          dd_api_key: ${{ secrets.DD_API_KEY }}
+          dd_app_key: ${{ secrets.DD_APP_KEY }}
+          dd_site: "datadoghq.com"
