@@ -381,7 +381,7 @@ data "aws_iam_policy_document" "datadog_assume_role" {
       test     = "StringEquals"
       variable = "sts:ExternalId"
       values = [
-        datadog_integration_aws_account.datadog_aws.auth_config[0].aws_auth_config_role[0].external_id
+        datadog_integration_aws_account.datadog_aws.auth_config.aws_auth_config_role.external_id
       ]
     }
   }
@@ -393,7 +393,7 @@ resource "aws_iam_role" "datadog_integration_role" {
 }
 
 resource "aws_iam_role_policy_attachment" "datadog_security_audit" {
-  role       = aws_iam_role.eks_node_role != null ? aws_iam_role.datadog_integration_role.name : ""
+  role       = aws_iam_role.datadog_integration_role.name
   policy_arn = "arn:aws:iam::aws:policy/SecurityAudit"
 }
 
